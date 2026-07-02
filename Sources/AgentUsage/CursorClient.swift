@@ -87,10 +87,17 @@ struct CursorClient {
     let mode: AuthMode
     private let base = "https://cursor.com"
 
+    /// Strips characters that could break out of the Cookie header (CR/LF would
+    /// allow injecting extra headers; ';' would terminate the cookie early) in
+    /// case a malformed value ever gets pasted or extracted.
+    private var sanitizedToken: String {
+        token.filter { !$0.isNewline && $0 != ";" }
+    }
+
     private func request(path: String, method: String = "GET", body: Data? = nil) -> URLRequest {
         var req = URLRequest(url: URL(string: base + path)!)
         req.httpMethod = method
-        req.setValue("WorkosCursorSessionToken=\(token)", forHTTPHeaderField: "Cookie")
+        req.setValue("WorkosCursorSessionToken=\(sanitizedToken)", forHTTPHeaderField: "Cookie")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         if method == "POST" {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")

@@ -3,18 +3,22 @@ import Foundation
 /// Defensive helpers for pulling values out of unofficial, drift-prone JSON.
 /// Keys are searched recursively so nested wrappers don't break extraction.
 enum JSON {
-    static func find(_ json: Any?, keys: [String]) -> Any? {
-        guard let json else { return nil }
+    /// Caps recursion into server-controlled JSON so a maliciously or
+    /// accidentally deep-nested response can't stack-overflow the app.
+    private static let maxDepth = 64
+
+    static func find(_ json: Any?, keys: [String], depth: Int = 0) -> Any? {
+        guard let json, depth < maxDepth else { return nil }
         if let dict = json as? [String: Any] {
             for key in keys {
                 if let value = dict[key], !(value is NSNull) { return value }
             }
             for value in dict.values {
-                if let found = find(value, keys: keys) { return found }
+                if let found = find(value, keys: keys, depth: depth + 1) { return found }
             }
         } else if let array = json as? [Any] {
             for value in array {
-                if let found = find(value, keys: keys) { return found }
+                if let found = find(value, keys: keys, depth: depth + 1) { return found }
             }
         }
         return nil
@@ -70,7 +74,8 @@ enum JSON {
     /// Collects every dictionary in the tree that satisfies `predicate`.
     static func collectDicts(_ json: Any?, where predicate: ([String: Any]) -> Bool) -> [[String: Any]] {
         var result: [[String: Any]] = []
-        func walk(_ node: Any?) {
+        func walk(_ node: Any?, depth: Int) {
+            guard depth < maxDepth else { return }
             if let dict = node as? [String: Any] {
                 // A matched dict is treated as a leaf record so we don't also
                 // sum any nested breakdown it may contain.
@@ -78,12 +83,12 @@ enum JSON {
                     result.append(dict)
                     return
                 }
-                for value in dict.values { walk(value) }
+                for value in dict.values { walk(value, depth: depth + 1) }
             } else if let array = node as? [Any] {
-                for value in array { walk(value) }
+                for value in array { walk(value, depth: depth + 1) }
             }
         }
-        walk(json)
+        walk(json, depth: 0)
         return result
     }
 }
