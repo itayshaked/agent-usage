@@ -18,11 +18,11 @@ mkdir -p "${APP_DIR}/Contents/Resources"
 
 cp "${BUILD_DIR}/${APP_NAME}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
-# SPM's generated Bundle.module accessor looks next to Bundle.main's URL, which
-# for an .app is the bundle root itself (not Contents/Resources).
+# Contents/Resources is the only location Apple's code signing seals for an
+# .app — BrandIcon.swift knows to look here first (see its resourceBundle).
 RESOURCE_BUNDLE="${BUILD_DIR}/${APP_NAME}_${APP_NAME}.bundle"
 if [ -d "${RESOURCE_BUNDLE}" ]; then
-    cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/${APP_NAME}_${APP_NAME}.bundle"
+    cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/Contents/Resources/${APP_NAME}_${APP_NAME}.bundle"
 fi
 
 cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
