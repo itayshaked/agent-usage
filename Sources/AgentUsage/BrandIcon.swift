@@ -10,7 +10,7 @@ enum BrandIcon {
     /// falling back to Bundle.module for local dev runs.
     private static let resourceBundle: Bundle = {
         let packagedURL = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Resources/CursorUsageBar_CursorUsageBar.bundle")
+            .appendingPathComponent("Contents/Resources/AgentUsage_AgentUsage.bundle")
         return Bundle(url: packagedURL) ?? Bundle.module
     }()
 

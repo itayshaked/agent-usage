@@ -4,7 +4,7 @@ import Security
 /// Minimal Keychain wrapper for storing credentials securely, keyed by account
 /// name so multiple providers (Cursor, Claude) can each have their own item.
 enum Keychain {
-    private static let service = "com.local.cursorusagebar"
+    private static let service = "com.local.agentusage"
     /// Default account preserves the original Cursor-only keychain item.
     static let cursorAccount = "WorkosCursorSessionToken"
     static let claudeAdminAccount = "ClaudeAdminApiKey"

@@ -4,7 +4,7 @@ set -euo pipefail
 # Builds a release binary and wraps it into a runnable, dock-less .app bundle.
 cd "$(dirname "$0")/.."
 
-APP_NAME="CursorUsageBar"
+APP_NAME="AgentUsage"
 BUILD_DIR=".build/release"
 APP_DIR="build/${APP_NAME}.app"
 
@@ -33,9 +33,9 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key>
     <string>${APP_NAME}</string>
     <key>CFBundleDisplayName</key>
-    <string>Cursor Usage</string>
+    <string>Agent Usage</string>
     <key>CFBundleIdentifier</key>
-    <string>com.local.cursorusagebar</string>
+    <string>com.local.agentusage</string>
     <key>CFBundleExecutable</key>
     <string>${APP_NAME}</string>
     <key>CFBundlePackageType</key>

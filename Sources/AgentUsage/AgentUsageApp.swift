@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct CursorUsageBarApp: App {
+struct AgentUsageApp: App {
     @StateObject private var cursorStore = UsageStore()
     @StateObject private var claudeStore = ClaudeUsageStore()
     @StateObject private var displayState = AppDisplayState()

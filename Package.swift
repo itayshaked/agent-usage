@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "CursorUsageBar",
+    name: "AgentUsage",
     platforms: [
         .macOS(.v13)
     ],
     targets: [
         .executableTarget(
-            name: "CursorUsageBar",
-            path: "Sources/CursorUsageBar",
+            name: "AgentUsage",
+            path: "Sources/AgentUsage",
             resources: [.copy("Resources")],
             linkerSettings: [.linkedLibrary("sqlite3")]
         )

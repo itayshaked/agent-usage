@@ -11,7 +11,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-APP_NAME="CursorUsageBar"
+APP_NAME="AgentUsage"
 APP_DIR="dist/${APP_NAME}.app"
 ZIP_PATH="dist/${APP_NAME}.zip"
 APP_VERSION="${APP_VERSION:-1.0}"
@@ -39,8 +39,8 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key><string>${APP_NAME}</string>
-    <key>CFBundleDisplayName</key><string>Cursor Usage</string>
-    <key>CFBundleIdentifier</key><string>com.local.cursorusagebar</string>
+    <key>CFBundleDisplayName</key><string>Agent Usage</string>
+    <key>CFBundleIdentifier</key><string>com.local.agentusage</string>
     <key>CFBundleExecutable</key><string>${APP_NAME}</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
