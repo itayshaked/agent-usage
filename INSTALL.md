@@ -9,9 +9,6 @@ signed in; Claude stats need Claude Code to have run locally at least once.
 
 ## Install
 
-The app is signed with a Developer ID and notarized by Apple, so it opens
-normally — no warnings, no workarounds.
-
 1. Download `AgentUsage.zip` and unzip it.
 2. Drag **AgentUsage** into your **Applications** folder.
 3. Double-click to open.
