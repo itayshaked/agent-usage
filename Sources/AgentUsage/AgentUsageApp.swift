@@ -6,6 +6,7 @@ struct AgentUsageApp: App {
     @StateObject private var claudeStore = ClaudeUsageStore()
     @StateObject private var displayState = AppDisplayState()
     @StateObject private var cycleTicker = MenuBarCycleTicker()
+    @StateObject private var sessionTimer = SessionTimerStore()
 
     var body: some Scene {
         MenuBarExtra {
@@ -13,9 +14,16 @@ struct AgentUsageApp: App {
                 .environmentObject(cursorStore)
                 .environmentObject(claudeStore)
                 .environmentObject(displayState)
+                .environmentObject(sessionTimer)
         } label: {
             MenuBarLabelView(cursorStore: cursorStore, claudeStore: claudeStore,
                               displayState: displayState, cycleTicker: cycleTicker)
+                .task {
+                    sessionTimer.onRefresh = { [weak cursorStore, weak claudeStore] in
+                        await cursorStore?.refresh()
+                        await claudeStore?.refresh()
+                    }
+                }
         }
         .menuBarExtraStyle(.window)
     }
