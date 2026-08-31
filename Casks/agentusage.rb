@@ -1,6 +1,6 @@
 cask "agentusage" do
-  version "1.4"
-  sha256 "53872b4a7d44477b39a2bcbc9daeaca29357a071b3b9805778ea8f46c161ac2a"
+  version "1.5"
+  sha256 "19b320aa57e4b829d32e8926b46b19feef1bda82583a062035e3a6379123c232"
 
   # Points at this repo's own GitHub Release asset. Scripts/cut_release.sh
   # tags a release, uploads the zip, and prints the version/sha256 to paste
