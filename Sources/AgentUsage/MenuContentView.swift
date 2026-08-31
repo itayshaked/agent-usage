@@ -12,7 +12,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var store: UsageStore
     @EnvironmentObject private var claudeStore: ClaudeUsageStore
     @EnvironmentObject private var displayState: AppDisplayState
-    @EnvironmentObject private var sessionTimer: SessionTimerStore
+    @EnvironmentObject private var bundles: BundleStore
     @State private var editingToken = false
     @State private var editingClaudeKey = false
     @State private var bodyHeight: CGFloat = 120
@@ -25,7 +25,7 @@ struct MenuContentView: View {
             // self-sizing menu bar window.
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    sessionSection
+                    SessionsView(sessions: allSessions)
                     Divider()
                     cursorSection
                     Divider()
@@ -45,58 +45,11 @@ struct MenuContentView: View {
         .frame(width: 340)
     }
 
-    // MARK: - Session timer
-
-    private var sessionSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: "stopwatch")
-                Text("Session").font(.headline)
-                Spacer()
-                if sessionTimer.isRunning {
-                    Text(sessionTimer.elapsedText)
-                        .font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
-                }
-            }
-
-            if sessionTimer.isRunning {
-                sessionRow(label: "Cursor",
-                           cost: sessionTimer.cursorCostDelta(current: currentCursorCost),
-                           tokens: sessionTimer.cursorTokenDelta(current: currentCursorTokens))
-                sessionRow(label: "Claude",
-                           cost: sessionTimer.claudeCostDelta(current: currentClaudeCost),
-                           tokens: sessionTimer.claudeTokenDelta(current: currentClaudeTokens))
-                Button("Stop") { sessionTimer.stop() }.buttonStyle(.borderless)
-            } else {
-                Text("Track tokens and cost from now.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button {
-                    sessionTimer.start(cursorCostDollars: currentCursorCost, cursorTokens: currentCursorTokens,
-                                       claudeCostDollars: currentClaudeCost, claudeTokens: currentClaudeTokens)
-                } label: {
-                    Label("Start timer", systemImage: "play.circle")
-                }
-                .buttonStyle(.borderless)
-            }
-        }
+    /// Both providers' sessions in one list. Cursor's are billed per
+    /// conversation; Claude's are estimated per transcript.
+    private var allSessions: [AgentSession] {
+        (store.usage?.sessions ?? []) + (claudeStore.usage?.sessions ?? [])
     }
-
-    private func sessionRow(label: String, cost: Double, tokens: Int) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label).font(.subheadline)
-            Spacer()
-            Text(String(format: "+$%.2f", cost)).font(.subheadline).monospacedDigit().bold()
-            if tokens > 0 {
-                Text("· +\(TokenFormat.compact(tokens)) tok")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var currentCursorCost: Double { store.usage?.totalSpendDollars ?? 0 }
-    private var currentCursorTokens: Int { store.usage?.models.compactMap { $0.totalTokens }.reduce(0, +) ?? 0 }
-    private var currentClaudeCost: Double { claudeStore.usage?.monthCostDollars ?? 0 }
-    private var currentClaudeTokens: Int { claudeStore.usage?.monthTokens ?? 0 }
 
     // MARK: - Cursor
 
@@ -223,14 +176,8 @@ struct MenuContentView: View {
             Spacer()
             Button {
                 Task {
-                    // Route through the session timer's refresh closure so the
-                    // manual button and the running timer share one path.
-                    if let refresh = sessionTimer.onRefresh {
-                        await refresh()
-                    } else {
-                        await store.refresh()
-                        await claudeStore.refresh()
-                    }
+                    await store.refresh()
+                    await claudeStore.refresh()
                 }
             } label: {
                 Image(systemName: "arrow.clockwise")

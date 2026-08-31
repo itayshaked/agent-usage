@@ -33,5 +33,7 @@ struct ClaudeUsageData {
     var monthTokens: Int = 0
     /// Per-model breakdown for the current month.
     var models: [ClaudeModelUsage] = []
+    /// One entry per session transcript touched this month.
+    var sessions: [AgentSession] = []
     var updatedAt: Date = Date()
 }

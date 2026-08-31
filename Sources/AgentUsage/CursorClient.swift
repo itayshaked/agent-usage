@@ -54,6 +54,8 @@ struct UsageData {
     var onDemandUsedCents: Double?
     var onDemandLimitCents: Double?
     var models: [ModelUsage] = []
+    /// Per-conversation attribution — the basis for the session list.
+    var sessions: [AgentSession] = []
     var members: [MemberSpend] = []
     var memberCount: Int?
     var updatedAt: Date = Date()
@@ -215,22 +217,17 @@ struct CursorClient {
             }
         }
 
-        // Per-model spend/tokens for the current cycle. The backend refuses windows
+        // Per-model and per-conversation breakdowns for the current cycle, both
+        // folded from one pass over the event feed. The backend refuses windows
         // spanning its cutovers, so scope the query to the billing cycle.
         if let userId {
             let start = data.cycleStart ?? Date(timeIntervalSinceNow: -30 * 24 * 3600)
-            let startMs = String(Int(start.timeIntervalSince1970 * 1000))
-            let endMs = String(Int(Date().timeIntervalSince1970 * 1000))
-            let payload: [String: Any] = [
-                "teamId": 0,
-                "userId": userId,
-                "startDate": startMs,
-                "endDate": endMs,
-            ]
-            let bodyData = try? JSONSerialization.data(withJSONObject: payload)
-            if let agg = try? await fetchJSON(request(path: "/api/dashboard/get-aggregated-usage-events",
-                                                      method: "POST", body: bodyData)) {
-                parseAggregated(agg, into: &data)
+            let events = await fetchUsageEvents(userId: userId, start: start, end: Date())
+            data.models = Self.models(from: events)
+            data.sessions = Self.sessions(from: events, composers: CursorComposerReader.composers())
+            // Only fall back to summed model spend if the summary didn't give us a figure.
+            if data.spendCents == nil, !data.models.isEmpty {
+                data.spendCents = data.models.compactMap { $0.cents }.reduce(0, +)
             }
         }
 
@@ -238,32 +235,136 @@ struct CursorClient {
         return data
     }
 
-    /// Aggregated events: `aggregations[]` with per-model `totalCents` and token counts.
-    private func parseAggregated(_ json: Any, into data: inout UsageData) {
-        let entries = JSON.collectDicts(json) { dict in
-            dict["totalCents"] != nil || dict["inputTokens"] != nil
-        }
-        guard !entries.isEmpty else { return }
+    /// The raw usage-event feed for a window.
+    ///
+    /// The older `get-aggregated-usage-events` endpoint now answers 200 with an
+    /// empty object, which silently left the breakdown blank. This feed is what
+    /// the dashboard itself reads; its `chargedCents` reconciles exactly with
+    /// the included-usage figure from `/api/usage-summary`, and every event
+    /// carries the `conversationId` that sessions are grouped by.
+    private func fetchUsageEvents(userId: Int, start: Date, end: Date) async -> [[String: Any]] {
+        var collected: [[String: Any]] = []
+        var page = 1
 
-        var models: [ModelUsage] = []
-        var spend = 0.0
-        var sawCents = false
-        for entry in entries {
-            let name = JSON.string(entry, keys: ["modelIntent", "model", "name"]) ?? "unknown"
-            let cents = JSON.double(entry, keys: ["totalCents", "chargedCents"])
-            if let cents { spend += cents; sawCents = true }
-            models.append(ModelUsage(
-                model: name,
-                requests: JSON.int(entry, keys: ["requestCount", "numRequests"]),
-                inputTokens: JSON.int(entry, keys: ["inputTokens"]),
-                outputTokens: JSON.int(entry, keys: ["outputTokens"]),
-                cacheReadTokens: JSON.int(entry, keys: ["cacheReadTokens"]),
-                cacheWriteTokens: JSON.int(entry, keys: ["cacheWriteTokens"]),
-                cents: cents
-            ))
+        while page <= Self.maxEventPages {
+            let payload: [String: Any] = [
+                "teamId": 0,
+                "userId": userId,
+                "startDate": String(Int(start.timeIntervalSince1970 * 1000)),
+                "endDate": String(Int(end.timeIntervalSince1970 * 1000)),
+                "page": page,
+                "pageSize": Self.eventPageSize,
+            ]
+            let body = try? JSONSerialization.data(withJSONObject: payload)
+            guard let json = try? await fetchJSON(request(path: "/api/dashboard/get-filtered-usage-events",
+                                                          method: "POST", body: body)),
+                  let events = JSON.find(json, keys: ["usageEventsDisplay"]) as? [Any],
+                  !events.isEmpty
+            else { break }
+
+            collected.append(contentsOf: events.compactMap { $0 as? [String: Any] })
+            if collected.count >= (JSON.int(json, keys: ["totalUsageEventsCount"]) ?? collected.count) { break }
+            page += 1
         }
-        data.models = models
-        // Only fall back to summed model spend if the summary didn't give us a figure.
-        if sawCents, data.spendCents == nil { data.spendCents = spend }
+        return collected
+    }
+
+    /// The feed pages; a heavy month runs to a few hundred events, and the cap
+    /// keeps a drifting `totalUsageEventsCount` from spinning us forever.
+    private static let eventPageSize = 1000
+    private static let maxEventPages = 20
+
+    // MARK: - Folding the feed
+
+    private static func models(from events: [[String: Any]]) -> [ModelUsage] {
+        var totals: [String: EventTotals] = [:]
+        var order: [String] = []
+        for event in events {
+            let name = JSON.string(event, keys: ["model"]) ?? "unknown"
+            if totals[name] == nil {
+                totals[name] = EventTotals()
+                order.append(name)
+            }
+            totals[name]?.add(event)
+        }
+        return order.compactMap { name in
+            totals[name].map { totals in
+                ModelUsage(model: name,
+                           requests: totals.requests,
+                           inputTokens: totals.inputTokens,
+                           outputTokens: totals.outputTokens,
+                           cacheReadTokens: totals.cacheReadTokens,
+                           cacheWriteTokens: totals.cacheWriteTokens,
+                           cents: totals.cents)
+            }
+        }
+    }
+
+    private static func sessions(from events: [[String: Any]],
+                                 composers: [String: CursorComposerReader.Composer]) -> [AgentSession] {
+        var totals: [String: EventTotals] = [:]
+        for event in events {
+            guard let id = JSON.string(event, keys: ["conversationId"]) else { continue }
+            if totals[id] == nil { totals[id] = EventTotals() }
+            totals[id]?.add(event)
+        }
+
+        return totals.map { id, totals in
+            let composer = composers[id]
+            // Subagent runs are named by their type, which is more useful than
+            // the generic title Cursor gives them.
+            let title = composer?.name
+                ?? composer?.subagentTypeName
+                ?? "Conversation " + id.prefix(8)
+            return AgentSession(
+                id: id,
+                provider: .cursor,
+                title: title,
+                subtitle: composer?.isSubagent == true ? "subagent" : nil,
+                costDollars: totals.cents / 100.0,
+                tokens: totals.totalTokens,
+                requests: totals.requests,
+                topModel: totals.topModel,
+                startedAt: totals.firstSeen ?? Date(),
+                lastActiveAt: totals.lastSeen ?? Date(),
+                costIsEstimate: false
+            )
+        }
+        .sorted { $0.costDollars > $1.costDollars }
+    }
+
+    /// Running totals while folding the event feed, shared by both groupings.
+    private struct EventTotals {
+        var requests = 0
+        var inputTokens = 0
+        var outputTokens = 0
+        var cacheReadTokens = 0
+        var cacheWriteTokens = 0
+        var cents = 0.0
+        var firstSeen: Date?
+        var lastSeen: Date?
+        private var modelCounts: [String: Int] = [:]
+
+        var totalTokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens }
+        var topModel: String? { modelCounts.max { $0.value < $1.value }?.key }
+
+        mutating func add(_ event: [String: Any]) {
+            requests += 1
+            // Request-based (non-token) events carry no tokenUsage at all.
+            let tokens = JSON.find(event, keys: ["tokenUsage"])
+            inputTokens += JSON.int(tokens, keys: ["inputTokens"]) ?? 0
+            outputTokens += JSON.int(tokens, keys: ["outputTokens"]) ?? 0
+            cacheReadTokens += JSON.int(tokens, keys: ["cacheReadTokens"]) ?? 0
+            cacheWriteTokens += JSON.int(tokens, keys: ["cacheWriteTokens"]) ?? 0
+            cents += JSON.double(event, keys: ["chargedCents", "totalCents"]) ?? 0
+
+            if let model = JSON.string(event, keys: ["model"]) {
+                modelCounts[model, default: 0] += 1
+            }
+            if let at = JSON.date(event, keys: ["timestamp"]) {
+                firstSeen = min(firstSeen ?? at, at)
+                lastSeen = max(lastSeen ?? at, at)
+            }
+        }
     }
 }

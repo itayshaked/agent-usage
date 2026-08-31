@@ -43,6 +43,51 @@ enum ClaudeLocalUsageReader {
         var cost = 0.0
     }
 
+    /// Per-transcript totals plus the bits needed to label the session.
+    private struct SessionTotals {
+        var totals = Totals()
+        var requests = 0
+        var title: String?
+        var firstSeen: Date?
+        var lastSeen: Date?
+        var modelCounts: [String: Int] = [:]
+
+        var tokens: Int { totals.input + totals.output + totals.cacheRead + totals.cacheWrite }
+        var topModel: String? { modelCounts.max { $0.value < $1.value }?.key }
+    }
+
+    /// Claude Code names a session by what you first asked it. Skips the
+    /// synthetic `<command-…>` and system-reminder envelopes so the title is
+    /// the sentence the person actually typed.
+    private static func userText(_ message: [String: Any]) -> String? {
+        func clean(_ text: String) -> String? {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("<") else { return nil }
+            return trimmed.replacingOccurrences(of: "\n", with: " ")
+        }
+        if let text = message["content"] as? String { return clean(text) }
+        if let parts = message["content"] as? [Any] {
+            for case let part as [String: Any] in parts {
+                if part["type"] as? String == "text",
+                   let text = part["text"] as? String,
+                   let cleaned = clean(text) { return cleaned }
+            }
+        }
+        return nil
+    }
+
+    /// "-Users-itay-shaked-kibush" -> "~/kibush". The directory name is the
+    /// project path with separators flattened, so recover a readable tail.
+    private static func projectLabel(_ directoryName: String) -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let homeKey = home.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-")
+        guard directoryName.hasPrefix(homeKey) else {
+            return directoryName.replacingOccurrences(of: "-", with: "/")
+        }
+        let tail = String(directoryName.dropFirst(homeKey.count)).drop { $0 == "-" }
+        return tail.isEmpty ? "~" : "~/" + tail
+    }
+
     /// Scans local transcripts for the current calendar month and today. Safe to call off the main thread.
     static func read() -> ClaudeUsageData {
         var data = ClaudeUsageData(scope: .thisMac)
@@ -65,6 +110,8 @@ enum ClaudeLocalUsageReader {
         }
 
         var modelTotals: [String: Totals] = [:]
+        var sessionTotals: [String: SessionTotals] = [:]
+        var sessionProjects: [String: String?] = [:]
         var monthTokens = 0, todayTokens = 0
         var monthCost = 0.0, todayCost = 0.0
 
@@ -77,14 +124,28 @@ enum ClaudeLocalUsageReader {
                   let modified = values.contentModificationDate,
                   modified >= startOfMonth else { continue }
 
+            // The transcript file *is* the session: its name is the session id
+            // and its parent directory is the project it ran in.
+            let sessionID = fileURL.deletingPathExtension().lastPathComponent
+            let project = projectLabel(fileURL.deletingLastPathComponent().lastPathComponent)
+
             guard var reader = LineReader(path: fileURL.path) else { continue }
             defer { reader.close() }
 
             while let line = reader.nextLine() {
                 guard !line.isEmpty,
                       let lineData = line.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                      obj["type"] as? String == "assistant",
+                      let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
+                else { continue }
+
+                if obj["type"] as? String == "user",
+                   sessionTotals[sessionID]?.title == nil,
+                   let message = obj["message"] as? [String: Any],
+                   let text = userText(message) {
+                    sessionTotals[sessionID, default: SessionTotals()].title = String(text.prefix(120))
+                }
+
+                guard obj["type"] as? String == "assistant",
                       let message = obj["message"] as? [String: Any],
                       let usage = message["usage"] as? [String: Any],
                       let timestamp = JSON.date(obj, keys: ["timestamp"]),
@@ -114,6 +175,19 @@ enum ClaudeLocalUsageReader {
                 totals.cacheWrite += cacheWrite
                 totals.cost += cost
                 modelTotals[model] = totals
+
+                var session = sessionTotals[sessionID] ?? SessionTotals()
+                session.totals.input += input
+                session.totals.output += output
+                session.totals.cacheRead += cacheRead
+                session.totals.cacheWrite += cacheWrite
+                session.totals.cost += cost
+                session.requests += 1
+                session.modelCounts[model, default: 0] += 1
+                session.firstSeen = min(session.firstSeen ?? timestamp, timestamp)
+                session.lastSeen = max(session.lastSeen ?? timestamp, timestamp)
+                sessionTotals[sessionID] = session
+                sessionProjects[sessionID] = project
             }
         }
 
@@ -126,6 +200,25 @@ enum ClaudeLocalUsageReader {
                               cacheReadTokens: totals.cacheRead, cacheWriteTokens: totals.cacheWrite,
                               costDollars: totals.cost)
         }
+        // Sessions are folded from the same records as the month totals, so the
+        // list always adds up to the figure shown above it.
+        data.sessions = sessionTotals.compactMap { id, session in
+            guard session.requests > 0, let first = session.firstSeen, let last = session.lastSeen else { return nil }
+            return AgentSession(
+                id: id,
+                provider: .claude,
+                title: session.title ?? "Session " + id.prefix(8),
+                subtitle: (sessionProjects[id] ?? nil),
+                costDollars: session.totals.cost,
+                tokens: session.tokens,
+                requests: session.requests,
+                topModel: session.topModel,
+                startedAt: first,
+                lastActiveAt: last,
+                costIsEstimate: true
+            )
+        }
+        .sorted { $0.costDollars > $1.costDollars }
         data.updatedAt = now
         return data
     }
