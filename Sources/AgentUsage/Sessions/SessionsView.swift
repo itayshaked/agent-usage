@@ -10,6 +10,9 @@ struct SessionsView: View {
     @State private var namingFor: String?
     @State private var draftName: String = ""
     @State private var showingAll = false
+    /// Collapsed state sticks across launches — the list is the tallest thing
+    /// in the popover, so whether it's open is a lasting preference.
+    @AppStorage("sessionsExpanded") private var expanded = true
 
     private let collapsedLimit = 5
 
@@ -33,7 +36,9 @@ struct SessionsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        DisclosureGroup(isExpanded: $expanded) {
+            content.padding(.top, 6)
+        } label: {
             HStack(alignment: .firstTextBaseline) {
                 Text("Sessions").font(.headline)
                 Spacer()
@@ -41,7 +46,14 @@ struct SessionsView: View {
                     .font(.subheadline).monospacedDigit().bold()
                 Text("today").font(.caption).foregroundStyle(.secondary)
             }
+            // The whole header toggles, not just the triangle.
+            .contentShape(Rectangle())
+            .onTapGesture { expanded.toggle() }
+        }
+    }
 
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 8) {
             if sessions.isEmpty {
                 Text("No sessions yet. Cursor chats and Claude Code sessions appear here as they run.")
                     .font(.caption).foregroundStyle(.secondary)
