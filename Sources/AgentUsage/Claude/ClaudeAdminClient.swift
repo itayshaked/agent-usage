@@ -86,7 +86,7 @@ struct ClaudeAdminClient {
             query: ["starting_at": [startParam], "bucket_width": ["1d"], "group_by[]": ["model"]]
         ))
         let usageBuckets = (JSON.find(usageJSON, keys: ["data"]) as? [Any]) ?? []
-        var modelTotals: [String: (input: Int, output: Int, cacheRead: Int, cacheWrite: Int)] = [:]
+        var modelTotals: [String: (input: Int, output: Int, cacheRead: Int, write5m: Int, write1h: Int)] = [:]
         var monthTokens = 0, todayTokens = 0
         for case let bucket as [String: Any] in usageBuckets {
             let bucketStart = JSON.date(bucket, keys: ["starting_at"])
@@ -96,19 +96,22 @@ struct ClaudeAdminClient {
                 let input = JSON.int(entry, keys: ["uncached_input_tokens", "input_tokens"]) ?? 0
                 let output = JSON.int(entry, keys: ["output_tokens"]) ?? 0
                 let cacheRead = JSON.int(entry, keys: ["cache_read_input_tokens"]) ?? 0
+                // Keep the cache-write TTLs apart: a 1-hour write costs 2x the
+                // input rate against 1.25x for 5 minutes.
                 let cacheCreation = entry["cache_creation"] as? [String: Any]
-                let cacheWrite = (JSON.int(cacheCreation, keys: ["ephemeral_1h_input_tokens"]) ?? 0)
-                    + (JSON.int(cacheCreation, keys: ["ephemeral_5m_input_tokens"]) ?? 0)
+                let write1h = JSON.int(cacheCreation, keys: ["ephemeral_1h_input_tokens"]) ?? 0
+                let write5m = JSON.int(cacheCreation, keys: ["ephemeral_5m_input_tokens"]) ?? 0
 
-                let tokens = input + output + cacheRead + cacheWrite
+                let tokens = input + output + cacheRead + write5m + write1h
                 monthTokens += tokens
                 if let bucketStart, bucketStart >= startOfToday { todayTokens += tokens }
 
-                var totals = modelTotals[model] ?? (0, 0, 0, 0)
+                var totals = modelTotals[model] ?? (0, 0, 0, 0, 0)
                 totals.input += input
                 totals.output += output
                 totals.cacheRead += cacheRead
-                totals.cacheWrite += cacheWrite
+                totals.write5m += write5m
+                totals.write1h += write1h
                 modelTotals[model] = totals
             }
         }
@@ -118,9 +121,10 @@ struct ClaudeAdminClient {
         data.models = modelTotals.map { model, t in
             ClaudeModelUsage(
                 model: model, inputTokens: t.input, outputTokens: t.output,
-                cacheReadTokens: t.cacheRead, cacheWriteTokens: t.cacheWrite,
+                cacheReadTokens: t.cacheRead, cacheWriteTokens: t.write5m + t.write1h,
                 costDollars: ClaudePricing.cost(model: model, inputTokens: t.input, outputTokens: t.output,
-                                                 cacheWriteTokens: t.cacheWrite, cacheReadTokens: t.cacheRead)
+                                                 cacheWrite5mTokens: t.write5m, cacheWrite1hTokens: t.write1h,
+                                                 cacheReadTokens: t.cacheRead)
             )
         }
         data.updatedAt = now

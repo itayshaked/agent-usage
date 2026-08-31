@@ -156,10 +156,27 @@ enum ClaudeLocalUsageReader {
                 let input = JSON.int(usage, keys: ["input_tokens"]) ?? 0
                 let output = JSON.int(usage, keys: ["output_tokens"]) ?? 0
                 let cacheRead = JSON.int(usage, keys: ["cache_read_input_tokens"]) ?? 0
+
+                // A 1-hour cache write costs 2x the input rate against 1.25x for
+                // 5 minutes, and Claude Code writes most of its cache at 1 hour —
+                // so the TTL split is worth reading rather than assuming.
+                let creation = usage["cache_creation"] as? [String: Any]
+                let write1h = JSON.int(creation, keys: ["ephemeral_1h_input_tokens"]) ?? 0
+                let write5m = JSON.int(creation, keys: ["ephemeral_5m_input_tokens"]) ?? 0
                 let cacheWrite = JSON.int(usage, keys: ["cache_creation_input_tokens"]) ?? 0
-                let cost = ClaudePricing.cost(model: model, inputTokens: input, outputTokens: output,
-                                               cacheWriteTokens: cacheWrite, cacheReadTokens: cacheRead)
-                let tokens = input + output + cacheRead + cacheWrite
+                // Transcripts written before the split existed carry only the
+                // total; charge those at the 5-minute rate.
+                let hasSplit = (write5m + write1h) > 0
+                let write5mTokens = hasSplit ? write5m : cacheWrite
+                let write1hTokens = hasSplit ? write1h : 0
+
+                let cost = ClaudePricing.cost(model: model,
+                                               speed: usage["speed"] as? String,
+                                               inputTokens: input, outputTokens: output,
+                                               cacheWrite5mTokens: write5mTokens,
+                                               cacheWrite1hTokens: write1hTokens,
+                                               cacheReadTokens: cacheRead)
+                let tokens = input + output + cacheRead + write5mTokens + write1hTokens
 
                 monthTokens += tokens
                 monthCost += cost
@@ -172,7 +189,7 @@ enum ClaudeLocalUsageReader {
                 totals.input += input
                 totals.output += output
                 totals.cacheRead += cacheRead
-                totals.cacheWrite += cacheWrite
+                totals.cacheWrite += write5mTokens + write1hTokens
                 totals.cost += cost
                 modelTotals[model] = totals
 
@@ -180,7 +197,7 @@ enum ClaudeLocalUsageReader {
                 session.totals.input += input
                 session.totals.output += output
                 session.totals.cacheRead += cacheRead
-                session.totals.cacheWrite += cacheWrite
+                session.totals.cacheWrite += write5mTokens + write1hTokens
                 session.totals.cost += cost
                 session.requests += 1
                 session.modelCounts[model, default: 0] += 1
