@@ -17,9 +17,16 @@ ZIP_PATH="dist/${APP_NAME}.zip"
 APP_VERSION="${APP_VERSION:-1.0}"
 
 echo "Building universal release binary…"
-swift build -c release --arch arm64 --arch x86_64
-BUILD_DIR=".build/apple/Products/Release"
-BIN="${BUILD_DIR}/${APP_NAME}"
+# Build each arch separately and lipo them together: a multi-`--arch` build
+# needs Xcode's xcbuild, which the Command Line Tools alone don't ship.
+swift build -c release --arch arm64
+swift build -c release --arch x86_64
+BUILD_DIR=".build/arm64-apple-macosx/release"
+BIN=".build/${APP_NAME}-universal"
+lipo -create \
+    ".build/arm64-apple-macosx/release/${APP_NAME}" \
+    ".build/x86_64-apple-macosx/release/${APP_NAME}" \
+    -output "${BIN}"
 
 echo "Assembling ${APP_DIR}…"
 rm -rf "dist"
