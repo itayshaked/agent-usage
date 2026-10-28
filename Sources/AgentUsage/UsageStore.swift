@@ -120,7 +120,7 @@ final class UsageStore: ObservableObject {
     func refresh() async {
         guard let (token, mode) = resolveToken() else {
             errorMessage = source == .localApp
-                ? "Couldn't read the Cursor app login. Open Cursor and sign in, or paste a token."
+                ? "Couldn't read the Cursor app login. Open Cursor and sign in (allow Keychain access if asked), or paste a token."
                 : "No token set."
             hasToken = false
             return

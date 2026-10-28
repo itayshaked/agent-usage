@@ -96,10 +96,34 @@ struct CursorClient {
         token.filter { !$0.isNewline && $0 != ";" }
     }
 
-    private func request(path: String, method: String = "GET", body: Data? = nil) -> URLRequest {
+    /// How the credential rides on dashboard requests. Cursor 3.27.12 swapped
+    /// its JWTs for opaque tokens and it isn't settled which form the dashboard
+    /// wants for those, so we try each until `/api/auth/me` accepts one.
+    private enum DashboardAuth {
+        case cookie(String)
+        case bearer(String)
+    }
+
+    private var dashboardAuthCandidates: [DashboardAuth] {
+        // Pasted cookies may arrive URL-encoded.
+        let value = sanitizedToken.replacingOccurrences(of: "%3A%3A", with: "::", options: .caseInsensitive)
+        guard let range = value.range(of: "::", options: .backwards) else {
+            return [.cookie(value), .bearer(value)]
+        }
+        let bare = String(value[range.upperBound...])
+        return [.cookie(value), .cookie(bare), .bearer(bare)]
+    }
+
+    private func request(path: String, method: String = "GET", body: Data? = nil,
+                         auth: DashboardAuth) -> URLRequest {
         var req = URLRequest(url: URL(string: base + path)!)
         req.httpMethod = method
-        req.setValue("WorkosCursorSessionToken=\(sanitizedToken)", forHTTPHeaderField: "Cookie")
+        switch auth {
+        case .cookie(let value):
+            req.setValue("WorkosCursorSessionToken=\(value)", forHTTPHeaderField: "Cookie")
+        case .bearer(let token):
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         if method == "POST" {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -193,16 +217,35 @@ struct CursorClient {
 
     // MARK: - Dashboard endpoints (individual cookie)
 
+    /// Finds the credential form the dashboard accepts. An unrecognised
+    /// session gets 204 with an empty body rather than 401, so anything that
+    /// doesn't come back with an identity counts as a rejection.
+    private func authenticate() async throws -> (Any, DashboardAuth) {
+        var firstError: Error?
+        for auth in dashboardAuthCandidates {
+            do {
+                let identity = try await fetchJSON(request(path: "/api/auth/me", auth: auth))
+                if JSON.find(identity, keys: ["email", "id"]) != nil { return (identity, auth) }
+            } catch let error as CursorClientError {
+                firstError = firstError ?? error
+            } catch {
+                // Empty or non-JSON body: not signed in under this form.
+            }
+        }
+        throw firstError ?? CursorClientError.message(
+            "Session token not accepted by Cursor. Sign in to Cursor again, or paste a fresh WorkosCursorSessionToken.")
+    }
+
     /// Fetches everything best-effort. A failure in one endpoint doesn't sink the others.
     private func fetchCookieUsage() async throws -> UsageData {
         var data = UsageData()
 
         // Identity is the anchor; if it 401s the token is bad and we surface that.
-        let identity = try await fetchJSON(request(path: "/api/auth/me"))
+        let (identity, auth) = try await authenticate()
         data.email = JSON.string(identity, keys: ["email"])
         let userId = JSON.int(identity, keys: ["id"])
 
-        if let summary = try? await fetchJSON(request(path: "/api/usage-summary")) {
+        if let summary = try? await fetchJSON(request(path: "/api/usage-summary", auth: auth)) {
             data.plan = JSON.string(summary, keys: ["membershipType", "plan", "membership"])
             data.cycleStart = JSON.date(summary, keys: ["billingCycleStart", "startOfMonth", "cycleStart"])
             data.cycleEnd = JSON.date(summary, keys: ["billingCycleEnd", "cycleEnd", "endOfMonth"])
@@ -222,7 +265,7 @@ struct CursorClient {
         // spanning its cutovers, so scope the query to the billing cycle.
         if let userId {
             let start = data.cycleStart ?? Date(timeIntervalSinceNow: -30 * 24 * 3600)
-            let events = await fetchUsageEvents(userId: userId, start: start, end: Date())
+            let events = await fetchUsageEvents(userId: userId, start: start, end: Date(), auth: auth)
             data.models = Self.models(from: events)
             data.sessions = Self.sessions(from: events, composers: CursorComposerReader.composers())
             // Only fall back to summed model spend if the summary didn't give us a figure.
@@ -242,7 +285,8 @@ struct CursorClient {
     /// the dashboard itself reads; its `chargedCents` reconciles exactly with
     /// the included-usage figure from `/api/usage-summary`, and every event
     /// carries the `conversationId` that sessions are grouped by.
-    private func fetchUsageEvents(userId: Int, start: Date, end: Date) async -> [[String: Any]] {
+    private func fetchUsageEvents(userId: Int, start: Date, end: Date,
+                                  auth: DashboardAuth) async -> [[String: Any]] {
         var collected: [[String: Any]] = []
         var page = 1
 
@@ -257,7 +301,7 @@ struct CursorClient {
             ]
             let body = try? JSONSerialization.data(withJSONObject: payload)
             guard let json = try? await fetchJSON(request(path: "/api/dashboard/get-filtered-usage-events",
-                                                          method: "POST", body: body)),
+                                                          method: "POST", body: body, auth: auth)),
                   let events = JSON.find(json, keys: ["usageEventsDisplay"]) as? [Any],
                   !events.isEmpty
             else { break }
